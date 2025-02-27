@@ -1,0 +1,65 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust 1.83.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.83.0
+        
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build
+        run: cargo build --verbose
+      
+      - name: Run tests
+        run: cargo test --verbose
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust 1.83.0 with Clippy
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.83.0
+          components: clippy
+      
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Clippy check
+        run: cargo clippy -- -D warnings
+
+  rustfmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust 1.83.0 with rustfmt
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.83.0
+          components: rustfmt
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check

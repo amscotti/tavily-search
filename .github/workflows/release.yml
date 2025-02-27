@@ -1,0 +1,141 @@
+name: Build and Release
+
+permissions:
+  contents: write  # Needed for uploading to releases
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:  # Allow manual triggering for testing
+
+env:
+  # Disable incremental compilation for faster from-scratch builds
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-release:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: tavily-search-windows-amd64.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/tavily-search.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: tavily-search-linux-amd64
+            binary_path: target/x86_64-unknown-linux-gnu/release/tavily-search
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_name: tavily-search-linux-musl-amd64
+            binary_path: target/x86_64-unknown-linux-musl/release/tavily-search
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: tavily-search-macos-amd64
+            binary_path: target/x86_64-apple-darwin/release/tavily-search
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: tavily-search-macos-arm64
+            binary_path: target/aarch64-apple-darwin/release/tavily-search
+            
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Update Rust to ensure we have the latest tools
+      - name: Update Rust
+        run: rustup update
+        
+      # Add specific target
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+      
+      # Install Rust components
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+        
+      # Install dependencies for musl target (only for Linux MUSL)
+      - name: Install musl tools and OpenSSL on Linux
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools musl-dev libssl-dev pkg-config
+
+          # Create OpenSSL directories for MUSL (handling existing directories)
+          sudo mkdir -p /usr/include/x86_64-linux-musl/openssl
+          
+          # Copy OpenSSL headers (overwriting if they exist)
+          sudo cp -rf /usr/include/openssl/* /usr/include/x86_64-linux-musl/openssl/
+          
+          # Create symbolic link only if it doesn't exist
+          if [ ! -e "/usr/include/x86_64-linux-musl/openssl" ]; then
+            sudo ln -s /usr/include/x86_64-linux-musl/openssl /usr/include/x86_64-linux-musl/
+          fi
+          
+          # Ensure the C compiler for MUSL can find OpenSSL
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
+          
+      # Configure cross-compilation for macOS ARM on Intel Mac
+      - name: Set up cross-compilation on macOS
+        if: matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin'
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          rustup target add aarch64-apple-darwin
+          echo "CARGO_BUILD_TARGET=aarch64-apple-darwin" >> $GITHUB_ENV
+          
+      # Cache Rust dependencies
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Build for non-MUSL targets
+      - name: Build release binary (non-MUSL)
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: "-C link-arg=-s"
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          
+      # Build for MUSL with vendored OpenSSL 
+      - name: Build for MUSL target
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          # Build directly with vendored OpenSSL for consistent results
+          cargo build --release --target ${{ matrix.target }} --features vendored-openssl
+        env:
+          RUSTFLAGS: "-C link-arg=-s"
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          OPENSSL_STATIC: "1"
+          OPENSSL_DIR: "/usr"
+          OPENSSL_LIB_DIR: "/usr/lib/x86_64-linux-gnu"
+          OPENSSL_INCLUDE_DIR: "/usr/include"
+         
+      # Upload binary to Artifacts for debugging
+      - name: Upload binary to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.binary_path }}
+          
+      # Rename binary with target and prepare for release
+      - name: Prepare binary for release
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          mkdir -p release-bin
+          cp "${{ matrix.binary_path }}" "release-bin/${{ matrix.asset_name }}"
+          
+      # Upload binary to Release
+      - name: Upload binary to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: release-bin/${{ matrix.asset_name }}
+          fail_on_unmatched_files: true
